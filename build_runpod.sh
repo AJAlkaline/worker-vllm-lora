@@ -29,7 +29,11 @@ if ! command -v docker &>/dev/null; then
 
   apt-get update -y
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-  systemctl enable docker && systemctl start docker
+  if command -v systemctl &>/dev/null; then
+    systemctl enable docker && systemctl start docker
+  else
+    echo "ⓘ systemctl not available, skipping docker service start."
+  fi
 else
   echo "Docker already installed."
 fi
@@ -44,10 +48,11 @@ if ! dpkg -l | grep -q nvidia-container-toolkit; then
 
   apt-get update -y
   apt-get install -y nvidia-container-toolkit
-  systemctl restart docker
-else
-  echo "NVIDIA Container Toolkit already installed."
-fi
+  if command -v systemctl &>/dev/null; then
+    systemctl restart docker
+  else
+    echo "ⓘ systemctl not available, docker will pick up nvidia-container-toolkit on next run."
+  fi
 
 #── 4) Clone (or update) runpod-workers/worker-vllm ────────────
 WORKDIR="/workspace/worker-vllm-lora"
