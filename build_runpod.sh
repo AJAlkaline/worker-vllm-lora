@@ -1,98 +1,105 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-#── 1) Must run as root ───────────────────────────────────────
-if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root (sudo)." >&2
-  exit 1
-fi
+#———————————————————————————————————————————————————————————————————————————————
+# 1) Check required env vars
+#———————————————————————————————————————————————————————————————————————————————
+: "${DOCKER_USER:?Need to set DOCKER_USER}"
+: "${DOCKER_TOKEN:?Need to set DOCKER_TOKEN}"
 
-#── 2) Install Docker CE if missing ──────────────────────────
+#———————————————————————————————————————————————————————————————————————————————
+# 2) Install system deps
+#———————————————————————————————————————————————————————————————————————————————
+apt-get update -y
+apt-get install -y sudo git curl wget unzip build-essential
+
+#———————————————————————————————————————————————————————————————————————————————
+# 3) Install Docker CE via get.docker.com
+#———————————————————————————————————————————————————————————————————————————————
 if ! command -v docker &>/dev/null; then
-  echo "Installing Docker CE..."
-  apt-get update -y
-  apt-get install -y \
-    ca-certificates \
-    curl \
-    gnupg \
-    lsb-release
-
-  mkdir -p /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-  apt-get update -y
-  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-  systemctl enable docker && systemctl start docker
+  curl -fsSL https://get.docker.com -o get-docker.sh
+  sudo sh get-docker.sh
 else
-  echo "Docker already installed."
+  echo "Docker already installed"
 fi
 
-#── 3) Install NVIDIA Container Toolkit ────────────────────────
-if ! dpkg -l | grep -q nvidia-container-toolkit; then
-  echo "Installing NVIDIA Container Toolkit..."
-  distribution="$(. /etc/os-release; echo $ID$VERSION_ID)"
-  curl -fsSL https://nvidia.github.io/nvidia-docker/gpgkey | apt-key add -
-  curl -fsSL "https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list" \
-    | tee /etc/apt/sources.list.d/nvidia-docker.list
+#———————————————————————————————————————————————————————————————————————————————
+# 4) Login to Docker Hub
+#———————————————————————————————————————————————————————————————————————————————
+echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
 
-  apt-get update -y
-  apt-get install -y nvidia-container-toolkit
-  systemctl restart docker
+#———————————————————————————————————————————————————————————————————————————————
+# 5) Install Bazelisk (Bazel launcher)
+#———————————————————————————————————————————————————————————————————————————————
+if ! command -v bazel &>/dev/null; then
+  wget -qO /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+  chmod +x /usr/local/bin/bazel
 else
-  echo "NVIDIA Container Toolkit already installed."
+  echo "Bazel already installed"
 fi
 
-#── 4) Clone (or update) runpod-workers/worker-vllm ────────────
+#———————————————————————————————————————————————————————————————————————————————
+# 6) Clone your worker-vllm-lora repo
+#———————————————————————————————————————————————————————————————————————————————
 WORKDIR="/workspace/worker-vllm-lora"
 if [ ! -d "$WORKDIR" ]; then
   git clone https://github.com/AJAlkaline/worker-vllm-lora.git "$WORKDIR"
 else
-  echo "Updating existing repo in $WORKDIR"
+  echo "Updating existing repo"
   git -C "$WORKDIR" pull
 fi
-
 cd "$WORKDIR"
 
-#── 5) Prepare Hugging Face secret ────────────────────────────
-HF_TOKEN_FILE="${HOME}/.hf_token"
-if [ ! -f "$HF_TOKEN_FILE" ]; then
-  echo "Error: Please create $HF_TOKEN_FILE containing your HF API token." >&2
-  exit 1
-fi
+#———————————————————————————————————————————————————————————————————————————————
+# 7) Create Bazel WORKSPACE with rules_docker
+#———————————————————————————————————————————————————————————————————————————————
+cat > WORKSPACE <<'EOF'
+workspace(name = "worker_vllm_lora")
 
-#── 6) Enable BuildKit for secrets ────────────────────────────
-export DOCKER_BUILDKIT=1
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-#── 7) Define your model & adapter ────────────────────────────
-MODEL="unsloth/Mistral-Small-Instruct-2409-bnb-4bit"
-LORA="alleavitch/hobielorafull"
-# inside the image we’ll merge into /models
-BASE_PATH="/models"
-IMAGE="ajalkaline/worker-vllm-lora:latest"
+# rules_docker
+http_archive(
+    name = "io_bazel_rules_docker",
+    sha256 = "fb5729a861d61896f8aeecc65c1dcaf149048393ca5bfb3da93735283cd8c7e3",
+    strip_prefix = "rules_docker-0.28.0",
+    urls = ["https://github.com/bazelbuild/rules_docker/archive/v0.28.0.tar.gz"],
+)
 
-#── 8) Build the Docker image ─────────────────────────────────
-echo "Building $IMAGE with base=$MODEL + LoRA=$LORA …"
-docker build \
-  --secret id=HF_TOKEN,src="$HF_TOKEN_FILE" \
-  --build-arg MODEL_NAME="$MODEL" \
-  --build-arg LORA_NAME="$LORA" \
-  --build-arg BASE_PATH="$BASE_PATH" \
-  -t "$IMAGE" \
-  .
+load("@io_bazel_rules_docker//container:container.bzl", "container_repositories")
+container_repositories()
 
-#── 9) (Optional) push to registry ────────────────────────────
-if [ "${DOCKER_PUSH:-1}" -eq 1 ]; then
-  echo "Pushing $IMAGE to registry…"
-  docker push "$IMAGE"
-else
-  echo "Skipping docker push (DOCKER_PUSH=0)."
-fi
+load("@io_bazel_rules_docker//go:image.bzl", "go_image")
+EOF
 
-echo "✅ Done! Your RunPod‑ready image is: $IMAGE"
+#———————————————————————————————————————————————————————————————————————————————
+# 8) Create BUILD.bazel for our Dockerfile
+#———————————————————————————————————————————————————————————————————————————————
+cat > BUILD.bazel <<'EOF'
+load("@io_bazel_rules_docker//container:container.bzl", "docker_build", "oci_push")
+
+# Build the local image from your Dockerfile
+docker_build(
+    name = "custom_image",
+    dockerfile = "Dockerfile",
+    # copy entire workspace so download_model.py, src/, etc. are included
+    directory = ".",
+    tars = [],
+)
+
+# Push to Docker Hub
+oci_push(
+    name         = "push_custom_image",
+    image        = ":custom_image",
+    repository   = "index.docker.io/${DOCKER_USER}/worker-vllm-lora",
+    remote_tags  = ["latest"],
+)
+EOF
+
+#———————————————————————————————————————————————————————————————————————————————
+# 9) Build & push with Bazel
+#———————————————————————————————————————————————————————————————————————————————
+echo "🛠️  Running Bazel to build & push the image…"
+bazel run //:push_custom_image
+
+echo "🎉  Done! Check https://hub.docker.com/r/${DOCKER_USER}/worker-vllm-lora:latest"

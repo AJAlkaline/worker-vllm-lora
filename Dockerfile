@@ -1,54 +1,53 @@
-FROM nvidia/cuda:12.1.0-base-ubuntu22.04 
+# 1) Base image with CUDA & Python
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04
 
-RUN apt-get update -y \
-    && apt-get install -y python3-pip
+# 2) Install OS packages + pip
+RUN apt-get update -y && \
+    apt-get install -y python3-pip git && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN ldconfig /usr/local/cuda-12.1/compat/
-
-# Install Python dependencies
+# 3) Install Python deps
 COPY builder/requirements.txt /requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install --upgrade pip && \
-    python3 -m pip install --upgrade -r /requirements.txt
+RUN pip3 install --upgrade pip && \
+    pip3 install -r /requirements.txt && \
+    pip3 install \
+      vllm==0.8.5 \
+      bitsandbytes>=0.45.0 \
+      peft \
+      transformers \
+      huggingface-hub
 
-# Install vLLM (switching back to pip installs since issues that required building fork are fixed and space optimization is not as important since caching) and FlashInfer 
-RUN python3 -m pip install vllm==0.8.5 && \
-    python3 -m pip install flashinfer -i https://flashinfer.ai/whl/cu121/torch2.3
+# 4) Build‑time args for your models & output path
+ARG MODEL_NAME
+ARG LORA_NAME
+ARG BASE_PATH=/models
 
-# install PEFT & friends for runtime LoRA
-RUN python3 -m pip install --no-cache-dir \
-    transformers peft bitsandbytes accelerate
+ENV BASE_PATH=${BASE_PATH} \
+    HF_HOME=${BASE_PATH}/hf_cache \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1
 
-# Setup for Option 2: Building the Image with the Model included
-ARG MODEL_NAME=""
-ARG TOKENIZER_NAME=""
-ARG BASE_PATH="/runpod-volume"
-ARG QUANTIZATION=""
-ARG MODEL_REVISION=""
-ARG TOKENIZER_REVISION=""
-
-ENV MODEL_NAME=$MODEL_NAME \
-    MODEL_REVISION=$MODEL_REVISION \
-    TOKENIZER_NAME=$TOKENIZER_NAME \
-    TOKENIZER_REVISION=$TOKENIZER_REVISION \
-    BASE_PATH=$BASE_PATH \
-    QUANTIZATION=$QUANTIZATION \
-    HF_DATASETS_CACHE="${BASE_PATH}/huggingface-cache/datasets" \
-    HUGGINGFACE_HUB_CACHE="${BASE_PATH}/huggingface-cache/hub" \
-    HF_HOME="${BASE_PATH}/huggingface-cache/hub" \
-    HF_HUB_ENABLE_HF_TRANSFER=0 
-
-ENV PYTHONPATH="/:/vllm-workspace"
-
-
+# 5) Copy in your vLLM worker code
 COPY src /src
-RUN --mount=type=secret,id=HF_TOKEN,required=false \
-    if [ -f /run/secrets/HF_TOKEN ]; then \
-    export HF_TOKEN=$(cat /run/secrets/HF_TOKEN); \
-    fi && \
-    if [ -n "$MODEL_NAME" ]; then \
-    python3 /src/download_model.py; \
-    fi
 
-# Start the handler
+# 6) Copy the merge helper
+COPY merge_lora.py /merge_lora.py
+
+# 7) Download & merge the models at build time
+RUN --mount=type=secret,id=HF_TOKEN \
+    python3 /merge_lora.py \
+      --base_model ${MODEL_NAME} \
+      --lora_adapter ${LORA_NAME} \
+      --output_dir ${BASE_PATH}
+
+# 8) Write out local_model_args.json so vLLM will load /models offline
+RUN python3 - << 'EOF'
+import json, os
+# This tells the worker to load the merged model from /models
+with open("/local_model_args.json","w") as f:
+    json.dump({"MODEL_NAME": "/models"}, f)
+EOF
+
+# 9) Final entrypoint
+WORKDIR /
 CMD ["python3", "/src/handler.py"]
