@@ -1,22 +1,29 @@
-load("@io_bazel_rules_docker//container:container.bzl", "docker_build", "oci_push")
+# BUILD
 
-# Build the Docker image from the checked‑in Dockerfile.
-# MODEL_NAME and LORA_NAME get passed in via --define on the bazel command line,
-# and then injected as --build-arg MODEL_NAME=... into the docker build.
-docker_build(
-    name       = "custom_image",
-    dockerfile = "Dockerfile",
-    directory  = ".",
-    build_args = {
-        "MODEL_NAME": "$(MODEL_NAME)",
-        "LORA_NAME":  "$(LORA_NAME)",
-    },
+load("@rules_oci//oci:pull.bzl", "oci_pull")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+
+# Create a new OCI image with an added text file
+oci_image(
+    name = "custom_image",
+    base = "@base_image",
+    tars = [
+        ":add_text_file",
+    ],
 )
 
-# Push it up under your Docker Hub repo
+# Define the text file to be added
+genrule(
+    name = "add_text_file",
+    srcs = [],
+    outs = ["text_layer.tar"],
+    cmd = "echo 'Hello from Bazel!' > hello.txt && tar -cf $@ hello.txt",
+)
+
+
 oci_push(
-    name        = "push_custom_image",
-    image       = ":custom_image",
-    repository  = "index.docker.io/${DOCKER_USER}/worker-vllm-lora",
-    remote_tags = ["latest"],
+    name = "push_custom_image",
+    image = ":custom_image",
+    repository = "index.docker.io/{YOUR_USERNAME}/custom_image",
+    remote_tags = ["latest"]
 )
