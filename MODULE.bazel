@@ -1,0 +1,9 @@
+module(
+    name = "worker_vllm_lora",
+)
+
+# Pull in rules_docker v0.28.0
+bazel_dep(
+    name    = "io_bazel_rules_docker",
+    version = "0.28.0",
+)

@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Exit on error, undefined var; enable pipefail if Bash supports it
-set -eu
-# only in Bash: enable pipefail
-if ( set -o | grep -q pipefail ); then
-  set -o pipefail
-fi
-
+set -euo pipefail
 
 #———————————————————————————————————————————————————————————————————————————————
 # 1) Check required env vars
 #———————————————————————————————————————————————————————————————————————————————
-: "${DOCKER_USER:?Need to set DOCKER_USER}"
-: "${DOCKER_TOKEN:?Need to set DOCKER_TOKEN}"
+: "${DOCKER_USER:?Need to set DOCKER_USER (your Docker Hub username)}"
+: "${DOCKER_TOKEN:?Need to set DOCKER_TOKEN (your Docker Hub access token)}"
+: "${MODEL_NAME:?Need to set MODEL_NAME (e.g. unsloth/Mistral-Small-Instruct-2409-bnb-4bit)}"
+: "${LORA_NAME:?Need to set LORA_NAME (your LoRA repo or path)}"
 
 #———————————————————————————————————————————————————————————————————————————————
 # 2) Install system deps
@@ -38,14 +34,15 @@ echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
 # 5) Install Bazelisk (Bazel launcher)
 #———————————————————————————————————————————————————————————————————————————————
 if ! command -v bazel &>/dev/null; then
-  wget -qO /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+  wget -qO /usr/local/bin/bazel \
+    https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
   chmod +x /usr/local/bin/bazel
 else
   echo "Bazel already installed"
 fi
 
 #———————————————————————————————————————————————————————————————————————————————
-# 6) Clone your worker-vllm-lora repo
+# 6) Clone or update your worker-vllm-lora repo
 #———————————————————————————————————————————————————————————————————————————————
 WORKDIR="/workspace/worker-vllm-lora"
 if [ ! -d "$WORKDIR" ]; then
@@ -57,55 +54,11 @@ fi
 cd "$WORKDIR"
 
 #———————————————————————————————————————————————————————————————————————————————
-# 7) Create Bazel WORKSPACE with rules_docker
-#———————————————————————————————————————————————————————————————————————————————
-cat > WORKSPACE <<'EOF'
-workspace(name = "worker_vllm_lora")
-
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-
-# rules_docker
-http_archive(
-    name = "io_bazel_rules_docker",
-    sha256 = "fb5729a861d61896f8aeecc65c1dcaf149048393ca5bfb3da93735283cd8c7e3",
-    strip_prefix = "rules_docker-0.28.0",
-    urls = ["https://github.com/bazelbuild/rules_docker/archive/v0.28.0.tar.gz"],
-)
-
-load("@io_bazel_rules_docker//container:container.bzl", "container_repositories")
-container_repositories()
-
-load("@io_bazel_rules_docker//go:image.bzl", "go_image")
-EOF
-
-#———————————————————————————————————————————————————————————————————————————————
-# 8) Create BUILD.bazel for our Dockerfile
-#———————————————————————————————————————————————————————————————————————————————
-cat > BUILD.bazel <<'EOF'
-load("@io_bazel_rules_docker//container:container.bzl", "docker_build", "oci_push")
-
-# Build the local image from your Dockerfile
-docker_build(
-    name = "custom_image",
-    dockerfile = "Dockerfile",
-    # copy entire workspace so download_model.py, src/, etc. are included
-    directory = ".",
-    tars = [],
-)
-
-# Push to Docker Hub
-oci_push(
-    name         = "push_custom_image",
-    image        = ":custom_image",
-    repository   = "index.docker.io/${DOCKER_USER}/worker-vllm-lora",
-    remote_tags  = ["latest"],
-)
-EOF
-
-#———————————————————————————————————————————————————————————————————————————————
-# 9) Build & push with Bazel
+# 7) Build & push with Bazel
 #———————————————————————————————————————————————————————————————————————————————
 echo "🛠️  Running Bazel to build & push the image…"
-bazel run //:push_custom_image
+bazel run //:push_custom_image \
+  --define="MODEL_NAME=$MODEL_NAME" \
+  --define="LORA_NAME=$LORA_NAME"
 
-echo "🎉  Done! Check https://hub.docker.com/r/${DOCKER_USER}/worker-vllm-lora:latest"
+echo "🎉  Done! Your image is at: docker.io/${DOCKER_USER}/worker-vllm-lora:latest"
