@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Exit on error, undefined var; enable pipefail if Bash supports it
+set -eu
+# only in Bash: enable pipefail
+if ( set -o | grep -q pipefail ); then
+  set -o pipefail
+fi
+
 
 #———————————————————————————————————————————————————————————————————————————————
 # 1) Check required env vars
