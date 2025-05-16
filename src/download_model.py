@@ -71,25 +71,38 @@ if __name__ == "__main__":
     setup_env()
     cache_dir = os.getenv("HF_HOME")
     model_name, model_revision = os.getenv("MODEL_NAME"), os.getenv("MODEL_REVISION") or None
-    tokenizer_name, tokenizer_revision = os.getenv("TOKENIZER_NAME") or model_name, os.getenv("TOKENIZER_REVISION") or model_revision
-   
-    model_path = download(model_name, model_revision, "model", cache_dir)   
-  
+    tokenizer_name, tokenizer_revision = (
+        os.getenv("TOKENIZER_NAME") or model_name,
+        os.getenv("TOKENIZER_REVISION") or model_revision,
+    )
+
+    # 1) download base model
+    model_path = download(model_name, model_revision, "model", cache_dir)
+
+    # 2) optionally download a LoRA adapter
+    if os.getenv("ENABLE_LORA", "false").lower() in ("1", "true"):
+        from huggingface_hub import snapshot_download
+
+        lora_name = os.getenv("LORA_PATH")
+        if lora_name:
+            lora_path = snapshot_download(
+                repo_id       = lora_name,
+                revision      = model_revision,
+                cache_dir     = cache_dir,
+                trust_remote_code = True
+            )
+            print(f"LoRA adapter downloaded to: {lora_path}")
+        else:
+            raise ValueError("ENABLE_LORA=1 but LORA_PATH is not set.")
+
     metadata = {
         "MODEL_NAME": model_path,
         "MODEL_REVISION": os.getenv("MODEL_REVISION"),
-        "QUANTIZATION": os.getenv("QUANTIZATION"),
-    }   
+        # if we downloaded a LoRA, pass its path through
+        **({"LORA_PATH": lora_path} if os.getenv("ENABLE_LORA", "").lower() in ("1","true") else {}),
+         "QUANTIZATION": os.getenv("QUANTIZATION"),
+     }
     
-    # if os.getenv("TENSORIZE") == "1": TODO: Add back once tensorizer is ready
-    #     serialized_uri, tensorizer_num_gpus, dtype = tensorize_model(model_path)
-    #     metadata.update({
-    #         "MODEL_NAME": serialized_uri,
-    #         "TENSORIZER_URI": serialized_uri,
-    #         "TENSOR_PARALLEL_SIZE": tensorizer_num_gpus,
-    #         "DTYPE": dtype
-    #     })
-        
     tokenizer_path = download(tokenizer_name, tokenizer_revision, "tokenizer", cache_dir)
     metadata.update({
         "TOKENIZER_NAME": tokenizer_path,

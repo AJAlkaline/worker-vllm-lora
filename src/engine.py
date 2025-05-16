@@ -108,7 +108,40 @@ class vLLMEngine:
     def _initialize_llm(self):
         try:
             start = time.time()
-            engine = AsyncLLMEngine.from_engine_args(self.engine_args)
+            # ── runtime LoRA? ─────────────────────────────────────────
+            if os.getenv("ENABLE_LORA", "false").lower() in ("1","true"):
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from peft         import PeftModel
+
+                base = self.engine_args.model
+                lora = os.getenv("LORA_PATH")
+                logging.info(f"Loading base model {base} in 4‑bit + LoRA {lora}")
+
+                # 1) load base 4‑bit
+                hf_model = AutoModelForCausalLM.from_pretrained(
+                    base,
+                    load_in_4bit=True,
+                    device_map="auto",
+                    trust_remote_code=self.engine_args.trust_remote_code
+                )
+                # 2) wrap with adapter
+                hf_model = PeftModel.from_pretrained(hf_model, lora)
+                # 3) tokenizer
+                hf_tokenizer = AutoTokenizer.from_pretrained(
+                    base,
+                    trust_remote_code=self.engine_args.trust_remote_code
+                )
+
+                # 4) spin up vLLM engine on this model
+                engine = AsyncLLMEngine.from_engine_args(
+                    self.engine_args,
+                    model     = hf_model,
+                    tokenizer = hf_tokenizer
+                )
+            else:
+                # default path: load from disk via vLLM’s loader
+                engine = AsyncLLMEngine.from_engine_args(self.engine_args)
+
             end = time.time()
             logging.info(f"Initialized vLLM engine in {end - start:.2f}s")
             return engine
