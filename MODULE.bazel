@@ -1,9 +1,10 @@
 module(
-    name = "worker_vllm_lora",
+    name    = "worker_vllm_lora",
+    version = "0.1.0",
 )
 
-# Pull in rules_docker v0.28.0
+# Pull in the OCI rules (v2.0.0‑alpha2)
 bazel_dep(
-    name    = "io_bazel_rules_docker",
-    version = "0.28.0",
+    name    = "rules_oci",
+    version = "2.0.0-alpha2",
 )

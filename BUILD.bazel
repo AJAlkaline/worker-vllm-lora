@@ -1,29 +1,36 @@
-# BUILD
-
+#BUILD
 load("@rules_oci//oci:pull.bzl", "oci_pull")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 
-# Create a new OCI image with an added text file
+# 2) Bake your model+LoRA into a layer
+genrule(
+    name    = "bake_model_lora",
+    srcs    = ["merge_lora.py"],
+    tools   = ["merge_lora.py"],
+    outs    = ["model_lora_layer.tar"],
+    cmd     = """
+      python3 $(location merge_lora.py) \
+        --base_model unsloth/Mistral-Small-Instruct-2409-bnb-4bit \
+        --lora_adapter aalleavitch/hobielorafull \
+        --output_dir=/tmp/model && \
+      tar -cf $@ -C /tmp/model .
+    """,
+)
+
+# 3) Assemble your final OCI image
 oci_image(
-    name = "custom_image",
-    base = "@base_image",
+    name = "worker_vllm_lora_image",
+    base = "runpod/pytorch",
     tars = [
-        ":add_text_file",
+        ":bake_model_lora",
+        # any other layers...
     ],
 )
 
-# Define the text file to be added
-genrule(
-    name = "add_text_file",
-    srcs = [],
-    outs = ["text_layer.tar"],
-    cmd = "echo 'Hello from Bazel!' > hello.txt && tar -cf $@ hello.txt",
-)
-
-
+# 4) Push it up
 oci_push(
-    name = "push_custom_image",
-    image = ":custom_image",
-    repository = "index.docker.io/{YOUR_USERNAME}/custom_image",
-    remote_tags = ["latest"]
+    name       = "push_worker_vllm_lora",
+    image      = ":worker_vllm_lora_image",
+    repository = "index.docker.io/ajalkaline/worker-vllm-lora",
+    remote_tags        = ["latest"],
 )
